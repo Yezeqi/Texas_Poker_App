@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">HomeGame</string>
+    <string name="title_activity_main">HomeGame</string>
+    <string name="package_name">com.friendspoker.app</string>
+    <string name="custom_url_scheme">com.friendspoker.app</string>
+</resources>

@@ -1,0 +1,43 @@
+{
+  "name": "texas-poker-app",
+  "version": "1.0.0",
+  "description": "Mobile-friendly private Texas Hold'em poker rooms.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "icons": "python scripts/generate_icons.py",
+    "prepare:mobile": "node scripts/prepare_mobile.mjs",
+    "cap:sync": "pnpm prepare:mobile && cap sync",
+    "cap:open:android": "cap open android",
+    "smoke": "node tests/smoke.mjs",
+    "smoke:bet": "node tests/bet-amount-smoke.mjs",
+    "smoke:bot": "node tests/bot-smoke.mjs",
+    "smoke:bot-refill": "node tests/bot-refill-smoke.mjs",
+    "smoke:buy": "node tests/buy-smoke.mjs",
+    "smoke:reconnect": "node tests/reconnect-smoke.mjs",
+    "smoke:reward": "node tests/reward-smoke.mjs",
+    "smoke:showdown": "node tests/showdown-rules-smoke.mjs",
+    "smoke:voice": "node tests/voice-smoke.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.5.3",
+      "onFail": "download"
+    }
+  },
+  "type": "module",
+  "dependencies": {
+    "express": "^5.2.1",
+    "pokersolver": "^2.1.4",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.1",
+    "socket.io-client": "^4.8.3"
+  }
+}

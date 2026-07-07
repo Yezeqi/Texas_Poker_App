@@ -1,0 +1,11 @@
+{
+  "appId": "com.friendspoker.app",
+  "appName": "HomeGame",
+  "webDir": "public",
+  "server": {
+    "cleartext": true,
+    "allowNavigation": [
+      "*"
+    ]
+  }
+}
