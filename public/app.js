@@ -3,6 +3,9 @@ const tableScreen = document.querySelector("#table");
 const nameInput = document.querySelector("#name");
 const codeInput = document.querySelector("#code");
 const serverInput = document.querySelector("#serverUrl");
+const accountUsernameInput = document.querySelector("#accountUsername");
+const accountPasswordInput = document.querySelector("#accountPassword");
+const accountStatus = document.querySelector("#accountStatus");
 const joinError = document.querySelector("#joinError");
 const roomCodeButton = document.querySelector("#copyCode");
 const playersEl = document.querySelector("#players");
@@ -31,12 +34,16 @@ const buttons = {
   modeToggle: document.querySelector("#modeToggle"),
   runoutOnce: document.querySelector("#runoutOnce"),
   runoutTwice: document.querySelector("#runoutTwice"),
+  loginAccount: document.querySelector("#loginAccount"),
+  registerAccount: document.querySelector("#registerAccount"),
+  logoutAccount: document.querySelector("#logoutAccount"),
 };
 
 const DEFAULT_SERVER_URL = "https://play.texashg.xyz";
 let state = null;
 let socket = null;
 let activeServerUrl = "";
+let account = null;
 let audioContext = null;
 let audioUnlocked = false;
 let speechUnlocked = false;
@@ -71,11 +78,13 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 const params = new URLSearchParams(location.search);
 const savedName = localStorage.getItem("pokerName");
 if (savedName) nameInput.value = savedName;
-const playerToken = getPlayerToken();
+let playerToken = getPlayerToken();
 const savedServerUrl = localStorage.getItem("pokerServerUrl");
 const serverFromUrl = params.get("server");
 serverInput.value = serverFromUrl || rememberedServerUrl(savedServerUrl) || defaultServerUrl();
+loadSavedAccountFields();
 connectSocket();
+autoLoginSavedAccount();
 
 const codeFromUrl = params.get("room");
 if (codeFromUrl) {
@@ -93,23 +102,32 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("focus", () => autoRejoinRoom("focus"));
 
-buttons.create.addEventListener("click", () => {
-  unlockAudio();
-  if (!ensureSocket()) return;
-  const name = playerName();
-  socket.emit("createRoom", { name, token: playerToken }, handleJoin);
+buttons.loginAccount.addEventListener("click", () => authenticateAccount("login"));
+buttons.registerAccount.addEventListener("click", () => authenticateAccount("register"));
+buttons.logoutAccount.addEventListener("click", () => {
+  account = null;
+  localStorage.removeItem("pokerAccountUsername");
+  localStorage.removeItem("pokerAccountPassword");
+  accountStatus.textContent = "未登录";
 });
 
-buttons.join.addEventListener("click", () => {
+buttons.create.addEventListener("click", async () => {
   unlockAudio();
-  if (!ensureSocket()) return;
+  if (!ensureSocket() || !(await ensureAccountForPlay())) return;
+  const name = playerName();
+  socket.emit("createRoom", { name, token: activePlayerToken() }, handleJoin);
+});
+
+buttons.join.addEventListener("click", async () => {
+  unlockAudio();
+  if (!ensureSocket() || !(await ensureAccountForPlay())) return;
   const name = playerName();
   const code = codeInput.value.trim().toUpperCase();
   if (!code) {
     joinError.textContent = "请输入房间码";
     return;
   }
-  socket.emit("joinRoom", { code, name, token: playerToken }, handleJoin);
+  socket.emit("joinRoom", { code, name, token: activePlayerToken() }, handleJoin);
 });
 
 buttons.ready.addEventListener("click", () => {
@@ -174,6 +192,69 @@ roomCodeButton.addEventListener("click", async () => {
   await navigator.clipboard?.writeText(url);
   messageEl.textContent = "房间链接已复制";
 });
+
+function loadSavedAccountFields() {
+  const username = localStorage.getItem("pokerAccountUsername") || "";
+  const password = localStorage.getItem("pokerAccountPassword") || "";
+  accountUsernameInput.value = username;
+  accountPasswordInput.value = password;
+  accountStatus.textContent = username && password ? "正在自动登录..." : "未登录";
+}
+
+async function autoLoginSavedAccount() {
+  if (!accountUsernameInput.value || !accountPasswordInput.value) return;
+  await authenticateAccount("login", { quiet: true });
+}
+
+async function ensureAccountForPlay() {
+  if (account?.token) return true;
+  if (accountUsernameInput.value && accountPasswordInput.value) {
+    const loggedIn = await authenticateAccount("login", { quiet: true });
+    if (loggedIn) return true;
+  }
+  joinError.textContent = "请先登录或注册账号";
+  accountStatus.textContent = "未登录";
+  return false;
+}
+
+async function authenticateAccount(mode, options = {}) {
+  const serverUrl = normalizeServerUrl(serverInput.value || defaultServerUrl());
+  const username = accountUsernameInput.value.trim();
+  const password = accountPasswordInput.value;
+  if (!serverUrl || !username || !password) {
+    if (!options.quiet) accountStatus.textContent = "请输入账号和密码";
+    return false;
+  }
+  accountStatus.textContent = mode === "register" ? "正在注册..." : "正在登录...";
+  try {
+    const response = await fetch(`${serverUrl}/api/${mode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, name: nameInput.value.trim() || username }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      accountStatus.textContent = result.error || "账号操作失败";
+      return false;
+    }
+    account = result.user;
+    playerToken = account.token;
+    nameInput.value = account.name || username;
+    localStorage.setItem("pokerAccountUsername", username);
+    localStorage.setItem("pokerAccountPassword", password);
+    localStorage.setItem("pokerName", nameInput.value);
+    accountStatus.textContent = `已登录：${account.username}`;
+    joinError.textContent = "";
+    return true;
+  } catch {
+    accountStatus.textContent = "无法连接账号服务器";
+    return false;
+  }
+}
+
+function activePlayerToken() {
+  return account?.token || playerToken;
+}
 
 function playerName() {
   const name = nameInput.value.trim() || `玩家${Math.floor(Math.random() * 90 + 10)}`;
@@ -287,7 +368,7 @@ function autoRejoinRoom(reason = "auto") {
   const now = Date.now();
   if (now - lastAutoRejoinAt < 1500) return;
   lastAutoRejoinAt = now;
-  socket.emit("joinRoom", { code, name: playerName(), token: playerToken }, (reply) => {
+  socket.emit("joinRoom", { code, name: playerName(), token: activePlayerToken() }, (reply) => {
     if (reply?.ok) {
       rememberRoomCode(reply.code || code);
       joinError.textContent = "";

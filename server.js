@@ -1,11 +1,15 @@
-﻿import express from "express";
+import express from "express";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import http from "http";
 import os from "os";
-import { randomInt } from "crypto";
+import path from "path";
+import { pbkdf2Sync, randomBytes, randomInt, timingSafeEqual } from "crypto";
+import { fileURLToPath } from "url";
 import { Server } from "socket.io";
 import pokerSolver from "pokersolver";
 
 const { Hand } = pokerSolver;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -19,9 +23,88 @@ const STARTING_CHIPS = 200;
 const BUY_IN_AMOUNT = 100;
 const BOT_BUY_IN = BUY_IN_AMOUNT;
 const RANK_VALUE = { 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, T: 10, J: 11, Q: 12, K: 13, A: 14 };
+const DATA_DIR = path.join(__dirname, "data");
+const USERS_FILE = path.join(DATA_DIR, "users.json");
 const rooms = new Map();
+const users = loadUsers();
 
+app.use(express.json({ limit: "32kb" }));
 app.use(express.static("public"));
+
+app.post("/api/register", (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  const password = String(req.body?.password || "");
+  const name = sanitizePlayerName(req.body?.name || username);
+  if (!validUsername(username)) return res.status(400).json({ ok: false, error: "账号只能使用 3-24 位字母、数字、下划线、点或横线" });
+  if (password.length < 6 || password.length > 72) return res.status(400).json({ ok: false, error: "密码长度需要 6-72 位" });
+  if (users[username]) return res.status(409).json({ ok: false, error: "账号已存在" });
+
+  const salt = randomBytes(16).toString("hex");
+  const user = {
+    id: randomBytes(16).toString("hex"),
+    username,
+    name,
+    salt,
+    passwordHash: hashPassword(password, salt),
+    createdAt: new Date().toISOString(),
+  };
+  users[username] = user;
+  saveUsers();
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+app.post("/api/login", (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  const password = String(req.body?.password || "");
+  const user = users[username];
+  if (!user || !verifyPassword(password, user)) return res.status(401).json({ ok: false, error: "账号或密码错误" });
+  res.json({ ok: true, user: publicUser(user) });
+});
+
+function loadUsers() {
+  try {
+    if (!existsSync(USERS_FILE)) return {};
+    return JSON.parse(readFileSync(USERS_FILE, "utf8"));
+  } catch (error) {
+    console.error("Failed to load users.json", error);
+    return {};
+  }
+}
+
+function saveUsers() {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+function normalizeUsername(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function validUsername(username) {
+  return /^[a-z0-9_.-]{3,24}$/.test(username);
+}
+
+function sanitizePlayerName(value) {
+  return String(value || "玩家").trim().slice(0, 16) || "玩家";
+}
+
+function hashPassword(password, salt) {
+  return pbkdf2Sync(password, salt, 120000, 32, "sha256").toString("hex");
+}
+
+function verifyPassword(password, user) {
+  const expected = Buffer.from(user.passwordHash, "hex");
+  const actual = Buffer.from(hashPassword(password, user.salt), "hex");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function publicUser(user) {
+  return {
+    username: user.username,
+    name: user.name,
+    token: `account:${user.id}`,
+  };
+}
 
 function roomCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -1025,3 +1108,6 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Texas Poker running at http://localhost:${PORT}`);
   if (lan) console.log(`Phone URL on same Wi-Fi: http://${lan}:${PORT}`);
 });
+
+
+
