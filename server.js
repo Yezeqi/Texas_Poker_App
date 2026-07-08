@@ -269,7 +269,11 @@ function newRoom(code = roomCode()) {
 }
 
 function seatedPlayers(room) {
-  return room.players.filter((player) => player.connected);
+  return room.players.filter((player) => !player.left);
+}
+
+function visiblePlayers(room) {
+  return room.players.filter((player) => !player.left);
 }
 
 function livePlayers(room) {
@@ -346,7 +350,7 @@ function snapshot(room, viewerId) {
     minBet: 1,
     runoutPrompt: publicRunoutPrompt(room, me),
     buyRequests: publicBuyRequests(room, viewerId),
-    players: room.players.map((player) => publicPlayer(player, viewerId, room)),
+    players: visiblePlayers(room).map((player) => publicPlayer(player, viewerId, room)),
   };
 }
 
@@ -1375,7 +1379,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     rooms.forEach((room) => {
-      const player = room.players.find((candidate) => candidate.id === socket.id);
+      const player = room.players.find((candidate) => candidate.id === socket.id && !candidate.left);
       if (!player) return;
       socket.to(room.code).emit("voicePeerLeft", { id: socket.id });
       markPlayerDisconnected(room, player);
@@ -1385,7 +1389,7 @@ io.on("connection", (socket) => {
 
 function joinRoom(socket, room, name, token) {
   socket.join(room.code);
-  const usedSeats = new Set(room.players.map((player) => player.seat));
+  const usedSeats = new Set(visiblePlayers(room).map((player) => player.seat));
   const seat = Array.from({ length: 8 }, (_, index) => index).find((index) => !usedSeats.has(index));
   const normalizedToken = String(token || socket.id);
   const persistentProfile = getPersistentProfile(normalizedToken, name);
@@ -1416,6 +1420,7 @@ function restorePlayer(socket, room, name, token) {
   const normalizedName = String(name || "").trim();
   const normalizedToken = String(token || "");
   const player = room.players.find((candidate) => (
+    !candidate.left &&
     !candidate.isBot &&
     (
       (normalizedToken && candidate.token === normalizedToken) ||
@@ -1505,7 +1510,7 @@ function leaveRoom(room, player, socket) {
 }
 
 function addBot(room, buyIn = room.botBuyIn || DEFAULT_BOT_BUY_IN) {
-  const usedSeats = new Set(room.players.map((player) => player.seat));
+  const usedSeats = new Set(visiblePlayers(room).map((player) => player.seat));
   const seat = Array.from({ length: 8 }, (_, index) => index).find((index) => !usedSeats.has(index));
   const botNames = ["阿河", "小盲侠", "牌桌助手", "松凶哥", "稳健哥", "河牌王"];
   const aiProfile = randomBotProfile();
