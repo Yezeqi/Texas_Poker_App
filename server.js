@@ -908,14 +908,26 @@ io.on("connection", (socket) => {
     checkAutoStart(room);
   });
 
-  socket.on("addBot", ({ code, buyIn }) => {
+  socket.on("addBot", ({ code, buyIn }, reply) => {
     const room = rooms.get(String(code || "").toUpperCase());
-    if (!room || seatedPlayers(room).length >= 8 || (room.phase !== "lobby" && room.phase !== "showdown")) return;
+    if (!room) {
+      reply?.({ ok: false, error: "找不到这个房间" });
+      return;
+    }
+    if (seatedPlayers(room).length >= 8) {
+      reply?.({ ok: false, error: "房间已满" });
+      return;
+    }
+    if (room.phase !== "lobby" && room.phase !== "showdown") {
+      reply?.({ ok: false, error: "本手进行中不能加人机" });
+      return;
+    }
     const botBuyIn = normalizeBuyAmount(buyIn || room.botBuyIn || DEFAULT_BOT_BUY_IN);
     room.botBuyIn = botBuyIn;
     addBot(room, botBuyIn);
     room.message = `人机玩家已加入，筹码 ${botBuyIn}`;
     checkAutoStart(room);
+    reply?.({ ok: true, buyIn: botBuyIn });
   });
 
   socket.on("setGameMode", ({ code, mode }) => {

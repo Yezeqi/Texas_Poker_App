@@ -144,7 +144,15 @@ buttons.ready.addEventListener("click", () => {
 buttons.addBot.addEventListener("click", () => {
   unlockAudio();
   const buyIn = normalizeBotBuyIn(botBuyInAmountInput?.value);
-  socket.emit("addBot", { code: state?.code, buyIn });
+  let acknowledged = false;
+  const timer = setTimeout(() => {
+    if (!acknowledged && messageEl) messageEl.textContent = "服务器未确认人机筹码，请拉取最新代码并重启服务器";
+  }, 1200);
+  socket.emit("addBot", { code: state?.code, buyIn }, (reply) => {
+    acknowledged = true;
+    clearTimeout(timer);
+    if (!reply?.ok && messageEl) messageEl.textContent = reply?.error || "添加人机失败";
+  });
 });
 buttons.fold.addEventListener("click", () => sendAction("fold"));
 buttons.checkCall.addEventListener("click", () => sendAction("checkCall"));
@@ -175,8 +183,16 @@ buttons.leaveRoom.addEventListener("click", () => {
   if (!window.confirm("确认退出当前房间？")) return;
   const code = state.code;
   stopVoiceChat();
+  let finished = false;
+  const finish = (reconnectSocket = false) => {
+    if (finished) return;
+    finished = true;
+    leaveCurrentRoom({ reconnectSocket });
+  };
+  const timer = setTimeout(() => finish(true), 800);
   socket.emit("leaveRoom", { code }, (reply) => {
-    if (reply?.ok) leaveCurrentRoom();
+    clearTimeout(timer);
+    if (reply?.ok) finish(false);
     else messageEl.textContent = reply?.error || "退出房间失败";
   });
 });
@@ -429,7 +445,7 @@ function normalizeBotBuyIn(value) {
   return Math.max(1, Math.min(10000, parsed));
 }
 
-function leaveCurrentRoom() {
+function leaveCurrentRoom(options = {}) {
   forgetRoomCode();
   stopVoiceChat(false);
   if (location.protocol.startsWith("http")) history.replaceState(null, "", location.pathname);
@@ -441,6 +457,10 @@ function leaveCurrentRoom() {
   joinScreen.classList.remove("hidden");
   tableScreen.classList.add("hidden");
   joinError.textContent = "";
+  if (options.reconnectSocket && socket) {
+    socket.disconnect();
+    socket.connect();
+  }
 }
 
 function sendAction(type, amount) {
