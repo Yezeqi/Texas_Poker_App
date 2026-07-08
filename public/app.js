@@ -33,6 +33,7 @@ const buttons = {
   requestBuy: document.querySelector("#requestBuy"),
   muteToggle: document.querySelector("#muteToggle"),
   voiceToggle: document.querySelector("#voiceToggle"),
+  leaveRoom: document.querySelector("#leaveRoom"),
   modeToggle: document.querySelector("#modeToggle"),
   runoutOnce: document.querySelector("#runoutOnce"),
   runoutTwice: document.querySelector("#runoutTwice"),
@@ -142,7 +143,8 @@ buttons.ready.addEventListener("click", () => {
 });
 buttons.addBot.addEventListener("click", () => {
   unlockAudio();
-  socket.emit("addBot", { code: state?.code, buyIn: Number(botBuyInAmountInput?.value) || undefined });
+  const buyIn = normalizeBotBuyIn(botBuyInAmountInput?.value);
+  socket.emit("addBot", { code: state?.code, buyIn });
 });
 buttons.fold.addEventListener("click", () => sendAction("fold"));
 buttons.checkCall.addEventListener("click", () => sendAction("checkCall"));
@@ -166,6 +168,17 @@ buttons.voiceToggle.addEventListener("click", () => {
   }
   if (!voiceActive) startVoiceChat();
   else toggleVoiceMute();
+});
+buttons.leaveRoom.addEventListener("click", () => {
+  if (!state || !socket) return;
+  unlockAudio();
+  if (!window.confirm("确认退出当前房间？")) return;
+  const code = state.code;
+  stopVoiceChat();
+  socket.emit("leaveRoom", { code }, (reply) => {
+    if (reply?.ok) leaveCurrentRoom();
+    else messageEl.textContent = reply?.error || "退出房间失败";
+  });
 });
 buttons.modeToggle.addEventListener("click", () => {
   if (!state || !socket) return;
@@ -292,6 +305,10 @@ function rememberRoomCode(code) {
   if (normalized) localStorage.setItem("pokerLastRoomCode", normalized);
 }
 
+function forgetRoomCode() {
+  localStorage.removeItem("pokerLastRoomCode");
+}
+
 function rememberedRoomCode() {
   return String(state?.code || codeInput.value || localStorage.getItem("pokerLastRoomCode") || "").trim().toUpperCase();
 }
@@ -406,6 +423,26 @@ function handleJoin(reply) {
   }
 }
 
+function normalizeBotBuyIn(value) {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed <= 0) return 200;
+  return Math.max(1, Math.min(10000, parsed));
+}
+
+function leaveCurrentRoom() {
+  forgetRoomCode();
+  stopVoiceChat(false);
+  if (location.protocol.startsWith("http")) history.replaceState(null, "", location.pathname);
+  state = null;
+  previousState = null;
+  codeInput.value = "";
+  playersEl.innerHTML = "";
+  communityEl.innerHTML = "";
+  joinScreen.classList.remove("hidden");
+  tableScreen.classList.add("hidden");
+  joinError.textContent = "";
+}
+
 function sendAction(type, amount) {
   if (!state || !socket) return;
   unlockAudio();
@@ -443,9 +480,6 @@ function render() {
   buttons.allIn.disabled = !isMyTurn;
   buttons.ready.disabled = inHand || !me || me.chips <= 0;
   buttons.addBot.disabled = !inLobby || state.players.length >= 8;
-  if (botBuyInAmountInput && document.activeElement !== botBuyInAmountInput && state.botBuyIn) {
-    botBuyInAmountInput.value = state.botBuyIn;
-  }
   buttons.modeToggle.disabled = !inLobby;
   buttons.modeToggle.textContent = state.gameMode === "reward" ? "抢鱿鱼" : "常规";
   buttons.voiceToggle.disabled = !state?.code;

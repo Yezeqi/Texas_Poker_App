@@ -22,6 +22,12 @@ const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
 const STARTING_CHIPS = 200;
 const BUY_IN_AMOUNT = 100;
 const DEFAULT_BOT_BUY_IN = STARTING_CHIPS;
+const BOT_PROFILES = [
+  { key: "looseAggressive", aggression: 0.82, looseness: 0.78, bluff: 0.22, call: 0.62, raiseThreshold: 0.58, allInThreshold: 0.9 },
+  { key: "tightPassive", aggression: 0.28, looseness: 0.28, bluff: 0.04, call: 0.38, raiseThreshold: 0.78, allInThreshold: 0.96 },
+  { key: "balanced", aggression: 0.55, looseness: 0.5, bluff: 0.11, call: 0.5, raiseThreshold: 0.68, allInThreshold: 0.93 },
+  { key: "tricky", aggression: 0.68, looseness: 0.62, bluff: 0.27, call: 0.48, raiseThreshold: 0.64, allInThreshold: 0.92 },
+];
 const RANK_VALUE = { 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, T: 10, J: 11, Q: 12, K: 13, A: 14 };
 const DATA_DIR = path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -678,6 +684,7 @@ function prepareNextHand(room) {
     player.allIn = false;
     player.ready = Boolean(player.isBot && player.chips > 0);
   });
+  room.players = room.players.filter((player) => !player.left);
   refillBustedBots(room);
 }
 
@@ -744,21 +751,30 @@ function scheduleBot(room) {
 function botAct(room, bot) {
   if (!bot.inHand || bot.folded || bot.allIn || room.phase === "lobby" || room.phase === "showdown") return;
   const toCall = Math.max(0, room.currentBet - bot.bet);
+  const profile = bot.aiProfile || BOT_PROFILES[2];
   const strength = botStrength(room, bot);
+  const draw = room.community.length >= 3 ? drawBonus([...bot.hand, ...room.community]) : 0;
   const pressure = toCall / Math.max(1, bot.chips + bot.bet);
-  const raiseAmount = botRaiseAmount(room, bot, strength);
+  const adjustedStrength = clamp(strength + (profile.looseness - 0.5) * 0.1, 0.08, 0.99);
+  const raiseAmount = botRaiseAmount(room, bot, adjustedStrength, profile);
   const canRaise = bot.chips > toCall + room.bigBlind && bot.bet + raiseAmount > room.currentBet;
   const roll = Math.random();
+  const bluffChance = Math.max(0, profile.bluff + draw * 0.55 - pressure * 0.22);
+  const semiBluff = canRaise && roll < bluffChance && pressure < 0.42;
+  const valueRaise = canRaise && adjustedStrength >= profile.raiseThreshold && roll < profile.aggression;
+  const shovePressure = bot.chips <= Math.max(room.bigBlind * 8, tablePot(room) * (0.75 + profile.aggression * 0.35));
 
   if (toCall >= bot.chips) {
-    actBot(room, bot, strength > 0.72 || (strength > 0.55 && roll < 0.35) ? "allIn" : "fold");
+    actBot(room, bot, adjustedStrength > 0.64 || (adjustedStrength > 0.48 && roll < profile.call) ? "allIn" : "fold");
+  } else if (canRaise && shovePressure && (adjustedStrength >= profile.allInThreshold || (semiBluff && roll < profile.bluff * 0.45))) {
+    actBot(room, bot, "allIn");
   } else if (toCall === 0) {
-    actBot(room, bot, canRaise && (strength > 0.72 || (strength > 0.58 && roll < 0.42)) ? "raise" : "checkCall", raiseAmount);
-  } else if (strength < 0.38 && pressure > 0.18) {
+    actBot(room, bot, (valueRaise || semiBluff || (canRaise && adjustedStrength > 0.52 && roll < profile.aggression * 0.28)) ? "raise" : "checkCall", raiseAmount);
+  } else if (adjustedStrength < 0.28 + profile.looseness * 0.12 && pressure > 0.16 + profile.call * 0.12 && roll > profile.bluff) {
     actBot(room, bot, "fold");
-  } else if (strength < 0.5 && pressure > 0.34 && roll < 0.72) {
+  } else if (adjustedStrength < 0.46 && pressure > 0.36 && roll > profile.call) {
     actBot(room, bot, "fold");
-  } else if (canRaise && strength > 0.76 && roll < 0.58) {
+  } else if (valueRaise || semiBluff) {
     actBot(room, bot, "raise", raiseAmount);
   } else {
     actBot(room, bot, "checkCall");
@@ -770,10 +786,23 @@ function actBot(room, bot, type, amount = 0) {
   act(room, fakeSocket, type, amount);
 }
 
-function botRaiseAmount(room, bot, strength) {
-  const pressure = strength > 0.82 ? 4 : strength > 0.68 ? 3 : 2;
-  const target = Math.max(room.currentBet + room.minRaise, room.bigBlind * pressure, bot.bet + room.bigBlind * pressure);
-  return Math.min(bot.chips, Math.max(1, target - bot.bet));
+function botRaiseAmount(room, bot, strength, profile = BOT_PROFILES[2]) {
+  const pot = Math.max(room.bigBlind * 2, tablePot(room));
+  const toCall = Math.max(0, room.currentBet - bot.bet);
+  const potFraction = 0.38 + profile.aggression * 0.28 + Math.max(0, strength - 0.55) * 0.55;
+  const pressure = strength > 0.82 ? 4.5 : strength > 0.66 ? 3.2 : 2.2;
+  const targetBet = Math.max(
+    room.currentBet + room.minRaise,
+    bot.bet + toCall + room.bigBlind,
+    bot.bet + Math.ceil(pot * potFraction),
+    room.bigBlind * pressure,
+  );
+  const amountToPay = targetBet - bot.bet;
+  return Math.min(bot.chips, Math.max(1, amountToPay));
+}
+
+function tablePot(room) {
+  return room.pot + room.players.reduce((sum, player) => sum + player.bet, 0);
 }
 
 function botStrength(room, bot) {
@@ -852,8 +881,8 @@ io.on("connection", (socket) => {
       return;
     }
     if (seatedPlayers(room).length >= 8) {
-      reply?.({ ok: false, error: "鎴块棿宸叉弧" });
       reply?.({ ok: false, error: "房间已满" });
+      return;
     }
     joinRoom(socket, room, name, token);
     reply?.({ ok: true, code: room.code });
@@ -882,9 +911,10 @@ io.on("connection", (socket) => {
   socket.on("addBot", ({ code, buyIn }) => {
     const room = rooms.get(String(code || "").toUpperCase());
     if (!room || seatedPlayers(room).length >= 8 || (room.phase !== "lobby" && room.phase !== "showdown")) return;
-    if (buyIn !== undefined) room.botBuyIn = normalizeBuyAmount(buyIn);
-    addBot(room);
-    room.message = "人机玩家已加入";
+    const botBuyIn = normalizeBuyAmount(buyIn || room.botBuyIn || DEFAULT_BOT_BUY_IN);
+    room.botBuyIn = botBuyIn;
+    addBot(room, botBuyIn);
+    room.message = `人机玩家已加入，筹码 ${botBuyIn}`;
     checkAutoStart(room);
   });
 
@@ -994,6 +1024,21 @@ io.on("connection", (socket) => {
     socket.to(room.code).emit("voicePeerLeft", { id: socket.id });
   });
 
+  socket.on("leaveRoom", ({ code }, reply) => {
+    const room = rooms.get(String(code || "").toUpperCase());
+    if (!room) {
+      reply?.({ ok: true });
+      return;
+    }
+    const player = room.players.find((candidate) => candidate.id === socket.id && !candidate.isBot);
+    if (!player) {
+      reply?.({ ok: true });
+      return;
+    }
+    leaveRoom(room, player, socket);
+    reply?.({ ok: true });
+  });
+
   socket.on("voiceSignal", ({ code, to, signal }) => {
     const room = rooms.get(String(code || "").toUpperCase());
     if (!room || typeof to !== "string" || !signal) return;
@@ -1094,15 +1139,49 @@ function markPlayerDisconnected(room, player) {
   }, DISCONNECT_GRACE_MS);
 }
 
-function addBot(room) {
+function leaveRoom(room, player, socket) {
+  if (player.reconnectTimer) {
+    clearTimeout(player.reconnectTimer);
+    player.reconnectTimer = null;
+  }
+  socket.leave(room.code);
+  socket.to(room.code).emit("voicePeerLeft", { id: socket.id });
+  room.buyRequests = room.buyRequests.filter((request) => request.fromId !== player.id && request.toId !== player.id);
+
+  if (player.inHand && inPlayingPhase(room)) {
+    player.left = true;
+    player.connected = false;
+    player.reconnecting = false;
+    player.ready = false;
+    if (!player.folded) {
+      player.folded = true;
+      room.acted.add(player.seat);
+    }
+    room.message = `${player.name} 退出房间，自动弃牌`;
+    if (room.turnSeat === player.seat) advanceGame(room);
+    else emitRoom(room);
+    return;
+  }
+
+  room.players = room.players.filter((candidate) => candidate !== player);
+  room.message = `${player.name} 退出了房间`;
+  if (room.players.some((candidate) => candidate.connected && !candidate.isBot)) {
+    checkAutoStart(room);
+  } else {
+    rooms.delete(room.code);
+  }
+}
+
+function addBot(room, buyIn = room.botBuyIn || DEFAULT_BOT_BUY_IN) {
   const usedSeats = new Set(room.players.map((player) => player.seat));
   const seat = Array.from({ length: 8 }, (_, index) => index).find((index) => !usedSeats.has(index));
   const botNames = ["阿河", "小盲侠", "牌桌助手", "松凶哥", "稳健哥", "河牌王"];
+  const aiProfile = randomBotProfile();
   room.players.push({
     id: `bot-${room.code}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     name: botNames[Math.floor(Math.random() * botNames.length)],
     seat,
-    chips: room.botBuyIn || DEFAULT_BOT_BUY_IN,
+    chips: buyIn,
     hand: [],
     bet: 0,
     committed: 0,
@@ -1112,7 +1191,13 @@ function addBot(room) {
     inHand: false,
     ready: true,
     isBot: true,
+    aiProfile,
   });
+}
+
+function randomBotProfile() {
+  const index = randomInt(0, BOT_PROFILES.length);
+  return { ...BOT_PROFILES[index] };
 }
 
 server.listen(PORT, "0.0.0.0", () => {

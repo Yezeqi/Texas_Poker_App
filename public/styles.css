@@ -198,6 +198,13 @@ select {
   background: #a9d8b5;
 }
 
+.leave-btn {
+  min-width: 70px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
 .mute-btn {
   min-width: 70px;
   background: transparent;
@@ -342,10 +349,6 @@ select {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.32);
 }
 
-.center {
-  z-index: 1;
-}
-
 .player.concealed-opponent .cards {
   min-height: 24px;
   opacity: 0.72;
@@ -456,11 +459,15 @@ select {
   gap: 12px;
   justify-items: center;
   text-align: center;
+  z-index: 18;
+  pointer-events: none;
 }
 
 .community {
   display: grid;
   gap: 7px;
+  position: relative;
+  z-index: 36;
 }
 
 .community-run {
@@ -503,6 +510,8 @@ select {
   background: rgba(0, 0, 0, 0.24);
   font-weight: 800;
   line-height: 1;
+  position: relative;
+  z-index: 30;
 }
 
 .reward-pool {
@@ -528,6 +537,8 @@ select {
   color: #fff6d5;
   font-weight: 850;
   line-height: 1;
+  position: relative;
+  z-index: 30;
 }
 
 .controls {
@@ -702,6 +713,7 @@ select {
   .room-code,
   .mute-btn,
   .voice-btn,
+  .leave-btn,
   .mode-btn,
   .start-btn,
   .bot-buy-input,
@@ -873,6 +885,7 @@ select {
   .room-code,
   .mute-btn,
   .voice-btn,
+  .leave-btn,
   .mode-btn,
   .start-btn,
   .bot-buy-input,
@@ -1004,6 +1017,7 @@ select {
   .room-code,
   .mute-btn,
   .voice-btn,
+  .leave-btn,
   .mode-btn,
   .start-btn,
   .bot-buy-input,
@@ -1017,6 +1031,7 @@ select {
   .bot-buy-input,
   .bot-btn,
   .mode-btn,
+  .leave-btn,
   .voice-btn,
   .mute-btn {
     min-width: 58px;
@@ -1158,6 +1173,7 @@ select {
   .bot-buy-input,
   .bot-btn,
   .mode-btn,
+  .leave-btn,
   .voice-btn,
   .mute-btn {
     min-width: 64px;
@@ -1189,15 +1205,20 @@ select {
 .remember-password {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--muted);
+  gap: 7px;
+  color: var(--text);
+  font-size: 13px;
   font-weight: 800;
+  line-height: 1;
 }
 
 .remember-password input {
-  width: 18px;
-  height: 18px;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
   min-height: 0;
+  padding: 0;
+  accent-color: var(--gold);
 }
 
 .account-actions {

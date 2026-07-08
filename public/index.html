@@ -29,7 +29,7 @@
               密码
               <input id="accountPassword" type="password" autocomplete="current-password" placeholder="至少 6 位" />
             </label>
-            <label class="remember-password">
+            <label class="remember-password" title="下次打开自动填写并登录">
               <input id="rememberPassword" type="checkbox" />
               <span>记住密码</span>
             </label>
@@ -72,8 +72,9 @@
           <div class="lobby-actions">
             <button id="muteToggle" class="mute-btn" title="静音切换">有声</button>
             <button id="voiceToggle" class="voice-btn" title="语音聊天">语音</button>
+            <button id="leaveRoom" class="leave-btn" title="退出房间">退出</button>
             <button id="modeToggle" class="mode-btn">常规</button>
-            <input id="botBuyInAmount" class="bot-buy-input" type="number" min="1" step="1" value="200" title="人机码量" aria-label="人机码量" />
+            <input id="botBuyInAmount" class="bot-buy-input" type="number" min="1" step="1" title="输入人机筹码量" aria-label="输入人机筹码量" placeholder="输入人机筹码量" />
             <button id="addBot" class="bot-btn">加人机</button>
             <button id="ready" class="start-btn">准备</button>
           </div>
