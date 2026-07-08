@@ -28,6 +28,17 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const rooms = new Map();
 const users = loadUsers();
 
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 app.use(express.json({ limit: "32kb" }));
 app.use(express.static("public"));
 
@@ -1108,6 +1119,3 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Texas Poker running at http://localhost:${PORT}`);
   if (lan) console.log(`Phone URL on same Wi-Fi: http://${lan}:${PORT}`);
 });
-
-
-
