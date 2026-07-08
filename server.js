@@ -84,7 +84,7 @@ app.post("/api/login", (req, res) => {
 function loadUsers() {
   try {
     if (!existsSync(USERS_FILE)) return {};
-    return JSON.parse(readFileSync(USERS_FILE, "utf8"));
+    return JSON.parse(readFileSync(USERS_FILE, "utf8").replace(/^\uFEFF/, ""));
   } catch (error) {
     console.error("Failed to load users.json", error);
     return {};
@@ -99,7 +99,7 @@ function saveUsers() {
 function loadPlayerProfiles() {
   try {
     if (!existsSync(PLAYER_PROFILES_FILE)) return {};
-    return JSON.parse(readFileSync(PLAYER_PROFILES_FILE, "utf8"));
+    return JSON.parse(readFileSync(PLAYER_PROFILES_FILE, "utf8").replace(/^\uFEFF/, ""));
   } catch (error) {
     console.error("Failed to load player-profiles.json", error);
     return {};
