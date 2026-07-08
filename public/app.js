@@ -822,22 +822,40 @@ async function startVoiceChat() {
     return;
   }
   try {
+    const permission = await microphonePermissionState();
+    if (permission === "denied") {
+      messageEl.textContent = "麦克风权限被系统拒绝，请到应用权限里允许麦克风";
+      return;
+    }
     localVoiceStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
+      audio: true,
       video: false,
     });
   } catch (error) {
-    messageEl.textContent = "无法打开麦克风，请检查权限";
+    messageEl.textContent = microphoneErrorMessage(error);
     return;
   }
   voiceActive = true;
   voiceMuted = false;
   renderVoiceButton();
   socket.emit("voiceJoin", { code: state.code });
+}
+
+async function microphonePermissionState() {
+  try {
+    const status = await navigator.permissions?.query?.({ name: "microphone" });
+    return status?.state || "";
+  } catch {
+    return "";
+  }
+}
+
+function microphoneErrorMessage(error) {
+  const name = error?.name || "未知错误";
+  if (name === "NotAllowedError" || name === "SecurityError") return `无法打开麦克风：权限被拒绝 (${name})`;
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") return `无法打开麦克风：没有找到麦克风 (${name})`;
+  if (name === "NotReadableError" || name === "TrackStartError") return `无法打开麦克风：可能被其他应用占用 (${name})`;
+  return `无法打开麦克风：${name}`;
 }
 
 function toggleVoiceMute() {

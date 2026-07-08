@@ -31,8 +31,11 @@ const BOT_PROFILES = [
 const RANK_VALUE = { 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, T: 10, J: 11, Q: 12, K: 13, A: 14 };
 const DATA_DIR = path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
+const PLAYER_PROFILES_FILE = path.join(DATA_DIR, "player-profiles.json");
+const PLAYER_ANALYSIS_FILE = path.join(DATA_DIR, "player-analysis.md");
 const rooms = new Map();
 const users = loadUsers();
+const playerProfiles = loadPlayerProfiles();
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -93,6 +96,22 @@ function saveUsers() {
   writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
+function loadPlayerProfiles() {
+  try {
+    if (!existsSync(PLAYER_PROFILES_FILE)) return {};
+    return JSON.parse(readFileSync(PLAYER_PROFILES_FILE, "utf8"));
+  } catch (error) {
+    console.error("Failed to load player-profiles.json", error);
+    return {};
+  }
+}
+
+function savePlayerProfiles() {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(PLAYER_PROFILES_FILE, JSON.stringify(playerProfiles, null, 2));
+  writeFileSync(PLAYER_ANALYSIS_FILE, generatePlayerAnalysisMarkdown());
+}
+
 function normalizeUsername(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -121,6 +140,79 @@ function publicUser(user) {
     name: user.name,
     token: `account:${user.id}`,
   };
+}
+
+function profileKeyForToken(token) {
+  const value = String(token || "");
+  if (value.startsWith("account:")) {
+    const userId = value.slice("account:".length);
+    const user = Object.values(users).find((candidate) => candidate.id === userId);
+    if (user) return `account:${user.username}`;
+  }
+  return `guest:${value || "unknown"}`;
+}
+
+function displayNameForProfile(key, fallback = "玩家") {
+  if (key.startsWith("account:")) {
+    const username = key.slice("account:".length);
+    return users[username]?.name || username;
+  }
+  return fallback;
+}
+
+function getPersistentProfile(token, name) {
+  const key = profileKeyForToken(token);
+  if (!playerProfiles[key]) {
+    playerProfiles[key] = {
+      key,
+      name: displayNameForProfile(key, name),
+      profile: newPlayerProfile(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  playerProfiles[key].name = displayNameForProfile(key, name || playerProfiles[key].name);
+  return playerProfiles[key];
+}
+
+function generatePlayerAnalysisMarkdown() {
+  const lines = [
+    "# 玩家打法分析",
+    "",
+    `生成时间：${new Date().toLocaleString("zh-CN", { hour12: false })}`,
+    "",
+  ];
+  const entries = Object.values(playerProfiles);
+  if (entries.length === 0) {
+    lines.push("暂无玩家画像数据。");
+    return `${lines.join("\n")}\n`;
+  }
+
+  entries
+    .sort((a, b) => (b.profile?.hands || 0) - (a.profile?.hands || 0))
+    .forEach((entry) => {
+      const profile = entry.profile || newPlayerProfile();
+      const style = playerStyle({ profile });
+      const hands = Math.max(1, profile.hands || 0);
+      const facedBets = Math.max(1, profile.facedBets || 0);
+      const aggressiveActions = Math.max(1, (profile.raises || 0) + (profile.calls || 0));
+      const betActions = Math.max(1, profile.betsOrRaises || 0);
+      lines.push(`## ${entry.name || entry.key}`);
+      lines.push(`- 绑定：${entry.key}`);
+      lines.push(`- 风格：${style.label}`);
+      lines.push(`- 样本手数：${profile.hands || 0}`);
+      lines.push(`- VPIP：${percent((profile.voluntaryHands || 0) / hands)}`);
+      lines.push(`- PFR：${percent((profile.preflopRaises || 0) / hands)}`);
+      lines.push(`- 攻击性：${percent((profile.raises || 0) / aggressiveActions)}`);
+      lines.push(`- 面对下注弃牌：${percent((profile.foldsToBet || 0) / facedBets)}`);
+      lines.push(`- 大注比例：${percent((profile.bigBets || 0) / betActions)}`);
+      lines.push(`- 翻后主动下注：${percent((profile.postflopBets || 0) / hands)}`);
+      lines.push("");
+    });
+  return `${lines.join("\n")}\n`;
+}
+
+function percent(value) {
+  return `${Math.round((Number(value) || 0) * 100)}%`;
 }
 
 function roomCode() {
@@ -763,6 +855,7 @@ function startProfileHand(player) {
   if (player.isBot) return;
   player.profile ??= newPlayerProfile();
   player.profile.hands += 1;
+  touchPlayerProfile(player);
   player.handProfile = {
     voluntarilyPutMoney: false,
     raisedPreflop: false,
@@ -794,6 +887,7 @@ function recordPlayerTendency(room, player, type, context) {
 
   if (type === "fold") {
     if (facedBet) profile.foldsToBet += 1;
+    touchPlayerProfile(player);
     return;
   }
 
@@ -804,6 +898,7 @@ function recordPlayerTendency(room, player, type, context) {
     } else {
       profile.checks += 1;
     }
+    touchPlayerProfile(player);
     return;
   }
 
@@ -817,6 +912,7 @@ function recordPlayerTendency(room, player, type, context) {
     }
     if (room.phase !== "preflop") profile.postflopBets += 1;
     if (context.paid >= Math.max(room.bigBlind * 4, context.potBeforeAction * 0.65)) profile.bigBets += 1;
+    touchPlayerProfile(player);
   }
 }
 
@@ -824,6 +920,15 @@ function markVoluntaryMoney(player) {
   if (!player.handProfile || player.handProfile.voluntarilyPutMoney) return;
   player.handProfile.voluntarilyPutMoney = true;
   player.profile.voluntaryHands += 1;
+}
+
+function touchPlayerProfile(player) {
+  if (!player.profileKey || !player.profile) return;
+  playerProfiles[player.profileKey] ??= { key: player.profileKey, name: player.name, profile: player.profile };
+  playerProfiles[player.profileKey].name = player.name || playerProfiles[player.profileKey].name;
+  playerProfiles[player.profileKey].profile = player.profile;
+  playerProfiles[player.profileKey].updatedAt = new Date().toISOString();
+  savePlayerProfiles();
 }
 
 function playerStyle(player) {
@@ -870,6 +975,7 @@ function botAct(room, bot) {
   const toCall = Math.max(0, room.currentBet - bot.bet);
   const profile = bot.aiProfile || BOT_PROFILES[2];
   const equity = botEquity(room, bot, profile);
+  const madeHand = postflopMadeHandInfo(room, bot);
   const draw = botDrawPressure(room, bot);
   const pot = Math.max(room.bigBlind * 2, tablePot(room));
   const potOdds = toCall > 0 ? toCall / Math.max(1, pot + toCall) : 0;
@@ -883,7 +989,12 @@ function botAct(room, bot) {
   const adjustedFoldPressure = stackPressure + (toCall > 0 ? bettorStyle.foldPressure : 0);
   const raiseAmount = botRaiseAmount(room, bot, equity, profile, toCall);
   const roll = Math.random();
+  if (shouldFoldPreflopToPressure(room, bot, equity, profile, toCall, roll)) {
+    actBot(room, bot, "fold");
+    return;
+  }
   const valueRaise = canRaise && readAdjustedEquity >= profile.raiseThreshold && roll < profile.aggression;
+  const madeHandValueBet = canRaise && toCall === 0 && madeHand.betFrequency > 0 && roll < clamp(madeHand.betFrequency + profile.aggression * 0.16, 0, 0.92);
   const semiBluff = canRaise && draw >= 0.08 && readAdjustedEquity >= 0.38 && roll < adjustedBluff + draw * 1.45;
   const pureBluff = canRaise && toCall === 0 && readAdjustedEquity < 0.48 && roll < adjustedBluff * (room.community.length ? 0.65 : 0.38);
   const bluffCatchRaise = canRaise && toCall > 0 && bettorStyle.bluffCatch > 0.06 && readAdjustedEquity > 0.48 && roll < profile.aggression * 0.22;
@@ -896,7 +1007,7 @@ function botAct(room, bot) {
   } else if (shoveReady) {
     actBot(room, bot, "allIn");
   } else if (toCall === 0) {
-    actBot(room, bot, (valueRaise || semiBluff || pureBluff || (canRaise && readAdjustedEquity > 0.54 && roll < profile.aggression * 0.32)) ? "raise" : "checkCall", raiseAmount);
+    actBot(room, bot, (madeHandValueBet || valueRaise || semiBluff || pureBluff || (canRaise && readAdjustedEquity > 0.54 && roll < profile.aggression * 0.32)) ? "raise" : "checkCall", raiseAmount);
   } else if (valueRaise || semiBluff || lightThreeBet || bluffCatchRaise) {
     actBot(room, bot, "raise", raiseAmount);
   } else if (readAdjustedEquity < callFloor && adjustedFoldPressure > 0.08 && roll > adjustedBluff) {
@@ -929,6 +1040,36 @@ function botRaiseAmount(room, bot, equity, profile = BOT_PROFILES[2], toCall = M
     : Math.max(room.currentBet + room.minRaise, bot.bet + toCall + Math.ceil(pot * potFraction));
   const amountToPay = targetBet - bot.bet;
   return Math.min(bot.chips, Math.max(1, amountToPay));
+}
+
+function shouldFoldPreflopToPressure(room, bot, equity, profile, toCall, roll) {
+  if (room.phase !== "preflop" || toCall <= 0 || toCall >= bot.chips) return false;
+  const currentBetInBigBlinds = room.currentBet / Math.max(1, room.bigBlind);
+  const pressure = toCall / Math.max(1, bot.chips + bot.bet);
+  const hand = preflopHandShape(bot.hand);
+  let threshold = 0.34 + pressure * 0.3 - (profile.looseness - 0.5) * 0.12;
+  if (currentBetInBigBlinds >= 3) threshold += 0.1;
+  if (currentBetInBigBlinds >= 5) threshold += 0.08;
+  if (hand.premium) threshold -= 0.16;
+  else if (hand.playable) threshold -= 0.06;
+  else if (hand.trash) threshold += 0.08;
+  const stubbornContinue = roll < Math.max(0.01, profile.bluff * 0.16 + profile.threeBet * 0.08);
+  return equity < clamp(threshold, 0.32, 0.68) && !stubbornContinue;
+}
+
+function preflopHandShape(hand) {
+  if (hand.length < 2) return { premium: false, playable: false, trash: true };
+  const [a, b] = hand;
+  const high = Math.max(cardRank(a), cardRank(b));
+  const low = Math.min(cardRank(a), cardRank(b));
+  const suited = a[1] === b[1];
+  const gap = high - low;
+  const pair = high === low;
+  return {
+    premium: pair && high >= 10 || high >= 14 && low >= 11 || high >= 13 && low >= 12 && suited,
+    playable: pair || high >= 13 && low >= 9 || suited && high >= 10 && gap <= 4 || high >= 10 && gap <= 2,
+    trash: high <= 8 && low <= 5 && (!suited || gap >= 3),
+  };
 }
 
 function tablePot(room) {
@@ -972,11 +1113,37 @@ function preflopStrength(hand) {
 }
 
 function postflopStrength(room, bot) {
-  const solved = Hand.solve([...bot.hand, ...room.community]);
-  const made = solved.rank / 9;
+  const madeInfo = postflopMadeHandInfo(room, bot);
+  const solved = madeInfo.solved;
+  const made = madeInfo.strength;
   const kickers = solved.cards.slice(0, 2).reduce((sum, card) => sum + (card.rank + 2), 0) / 28;
   const draw = drawBonus([...bot.hand, ...room.community]);
-  return clamp(made * 0.78 + kickers * 0.12 + draw, 0.18, 0.98);
+  return clamp(made * 0.82 + kickers * 0.08 + draw, 0.18, 0.98);
+}
+
+function postflopMadeHandInfo(room, bot) {
+  if (room.community.length < 3) return { strength: 0, betFrequency: 0, solved: { cards: [] } };
+  const cards = [...bot.hand, ...room.community];
+  const solved = Hand.solve(cards);
+  const rank = solved.rank;
+  const boardRanks = room.community.map(cardRank);
+  const holeRanks = bot.hand.map(cardRank);
+  const topBoardRank = Math.max(...boardRanks);
+  const counts = new Map();
+  cards.forEach((card) => counts.set(cardRank(card), (counts.get(cardRank(card)) || 0) + 1));
+  const pairRanks = [...counts.entries()].filter(([, count]) => count >= 2).map(([rankValue]) => rankValue);
+  const topPair = pairRanks.includes(topBoardRank) && holeRanks.includes(topBoardRank);
+  const overPair = holeRanks[0] === holeRanks[1] && holeRanks[0] > topBoardRank;
+  const pairUsesHole = pairRanks.some((rankValue) => holeRanks.includes(rankValue));
+
+  if (rank >= 7) return { strength: 0.94, betFrequency: 0.9, solved };
+  if (rank === 6) return { strength: 0.9, betFrequency: 0.88, solved };
+  if (rank === 5) return { strength: 0.86, betFrequency: 0.84, solved };
+  if (rank === 4) return { strength: 0.78, betFrequency: 0.78, solved };
+  if (rank === 3) return { strength: 0.68, betFrequency: 0.72, solved };
+  if (rank === 2 && (topPair || overPair)) return { strength: 0.58, betFrequency: 0.62, solved };
+  if (rank === 2 && pairUsesHole) return { strength: 0.45, betFrequency: 0.34, solved };
+  return { strength: 0.24, betFrequency: 0, solved };
 }
 
 function drawBonus(cards) {
@@ -1220,9 +1387,13 @@ function joinRoom(socket, room, name, token) {
   socket.join(room.code);
   const usedSeats = new Set(room.players.map((player) => player.seat));
   const seat = Array.from({ length: 8 }, (_, index) => index).find((index) => !usedSeats.has(index));
+  const normalizedToken = String(token || socket.id);
+  const persistentProfile = getPersistentProfile(normalizedToken, name);
   room.players.push({
     id: socket.id,
-    token: String(token || socket.id),
+    token: normalizedToken,
+    profileKey: persistentProfile.key,
+    profile: persistentProfile.profile,
     name: String(name || "玩家").slice(0, 16),
     seat,
     chips: STARTING_CHIPS,
@@ -1265,6 +1436,9 @@ function restorePlayer(socket, room, name, token) {
   }
   player.id = socket.id;
   player.token = normalizedToken || player.token || socket.id;
+  const persistentProfile = getPersistentProfile(player.token, player.name);
+  player.profileKey = persistentProfile.key;
+  player.profile = persistentProfile.profile;
   player.name = String(name || player.name).slice(0, 16);
   player.connected = true;
   player.reconnecting = false;
