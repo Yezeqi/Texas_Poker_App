@@ -186,6 +186,13 @@ select {
   background: #d8ddd2;
 }
 
+.bot-buy-input {
+  width: 74px;
+  min-height: 34px;
+  padding: 0 8px;
+  text-align: center;
+}
+
 .mode-btn {
   min-width: 88px;
   background: #a9d8b5;
@@ -697,6 +704,7 @@ select {
   .voice-btn,
   .mode-btn,
   .start-btn,
+  .bot-buy-input,
   .bot-btn {
     min-height: 24px;
     min-width: 42px;
@@ -708,6 +716,11 @@ select {
 
   .room-code {
     min-width: 54px;
+  }
+
+  .bot-buy-input {
+    width: 50px;
+    min-width: 50px;
   }
 
   .felt {
@@ -862,6 +875,7 @@ select {
   .voice-btn,
   .mode-btn,
   .start-btn,
+  .bot-buy-input,
   .bot-btn {
     min-height: 22px;
     min-width: 38px;
@@ -871,6 +885,11 @@ select {
 
   .room-code {
     min-width: 48px;
+  }
+
+  .bot-buy-input {
+    width: 46px;
+    min-width: 46px;
   }
 
   .felt {
@@ -987,6 +1006,7 @@ select {
   .voice-btn,
   .mode-btn,
   .start-btn,
+  .bot-buy-input,
   .bot-btn {
     min-height: 38px;
     padding: 0 8px;
@@ -994,6 +1014,7 @@ select {
   }
 
   .start-btn,
+  .bot-buy-input,
   .bot-btn,
   .mode-btn,
   .voice-btn,
@@ -1134,6 +1155,7 @@ select {
   }
 
   .start-btn,
+  .bot-buy-input,
   .bot-btn,
   .mode-btn,
   .voice-btn,
@@ -1162,6 +1184,20 @@ select {
   min-height: 20px;
   color: var(--gold);
   font-weight: 800;
+}
+
+.remember-password {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.remember-password input {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
 }
 
 .account-actions {

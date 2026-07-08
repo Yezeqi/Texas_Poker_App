@@ -5,6 +5,7 @@ const codeInput = document.querySelector("#code");
 const serverInput = document.querySelector("#serverUrl");
 const accountUsernameInput = document.querySelector("#accountUsername");
 const accountPasswordInput = document.querySelector("#accountPassword");
+const rememberPasswordInput = document.querySelector("#rememberPassword");
 const accountStatus = document.querySelector("#accountStatus");
 const joinError = document.querySelector("#joinError");
 const roomCodeButton = document.querySelector("#copyCode");
@@ -14,6 +15,7 @@ const potEl = document.querySelector("#pot");
 const rewardPoolEl = document.querySelector("#rewardPool");
 const messageEl = document.querySelector("#message");
 const raiseInput = document.querySelector("#raiseAmount");
+const botBuyInAmountInput = document.querySelector("#botBuyInAmount");
 const buyAmountInput = document.querySelector("#buyAmount");
 const buyTargetSelect = document.querySelector("#buyTarget");
 const buyRequestsEl = document.querySelector("#buyRequests");
@@ -106,21 +108,25 @@ buttons.loginAccount.addEventListener("click", () => authenticateAccount("login"
 buttons.registerAccount.addEventListener("click", () => authenticateAccount("register"));
 buttons.logoutAccount.addEventListener("click", () => {
   account = null;
-  localStorage.removeItem("pokerAccountUsername");
   localStorage.removeItem("pokerAccountPassword");
-  accountStatus.textContent = "未登录";
+  localStorage.setItem("pokerRememberPassword", "false");
+  if (rememberPasswordInput) rememberPasswordInput.checked = false;
+  accountPasswordInput.value = "";
+  accountStatus.textContent = "未登录，可游客游戏";
 });
 
 buttons.create.addEventListener("click", async () => {
   unlockAudio();
-  if (!ensureSocket() || !(await ensureAccountForPlay())) return;
+  if (!ensureSocket()) return;
+  await ensureAccountForPlay();
   const name = playerName();
   socket.emit("createRoom", { name, token: activePlayerToken() }, handleJoin);
 });
 
 buttons.join.addEventListener("click", async () => {
   unlockAudio();
-  if (!ensureSocket() || !(await ensureAccountForPlay())) return;
+  if (!ensureSocket()) return;
+  await ensureAccountForPlay();
   const name = playerName();
   const code = codeInput.value.trim().toUpperCase();
   if (!code) {
@@ -136,12 +142,17 @@ buttons.ready.addEventListener("click", () => {
 });
 buttons.addBot.addEventListener("click", () => {
   unlockAudio();
-  socket.emit("addBot", { code: state?.code });
+  socket.emit("addBot", { code: state?.code, buyIn: Number(botBuyInAmountInput?.value) || undefined });
 });
 buttons.fold.addEventListener("click", () => sendAction("fold"));
 buttons.checkCall.addEventListener("click", () => sendAction("checkCall"));
 buttons.raise.addEventListener("click", () => sendAction("raise", Number(raiseInput.value)));
-buttons.allIn.addEventListener("click", () => sendAction("allIn"));
+buttons.allIn.addEventListener("click", () => {
+  const me = state?.players?.find((player) => player.seat === state.meSeat);
+  const amount = Math.max(0, Number(me?.chips) || 0);
+  if (!window.confirm(`确认全下 ${amount}？`)) return;
+  sendAction("allIn");
+});
 buttons.muteToggle.addEventListener("click", () => {
   muted = !muted;
   localStorage.setItem("pokerMuted", String(muted));
@@ -196,9 +207,11 @@ roomCodeButton.addEventListener("click", async () => {
 function loadSavedAccountFields() {
   const username = localStorage.getItem("pokerAccountUsername") || "";
   const password = localStorage.getItem("pokerAccountPassword") || "";
+  const rememberPassword = localStorage.getItem("pokerRememberPassword") === "true";
   accountUsernameInput.value = username;
-  accountPasswordInput.value = password;
-  accountStatus.textContent = username && password ? "正在自动登录..." : "未登录";
+  accountPasswordInput.value = rememberPassword ? password : "";
+  if (rememberPasswordInput) rememberPasswordInput.checked = rememberPassword;
+  accountStatus.textContent = username && rememberPassword && password ? "正在自动登录..." : "未登录，可游客游戏";
 }
 
 async function autoLoginSavedAccount() {
@@ -212,9 +225,8 @@ async function ensureAccountForPlay() {
     const loggedIn = await authenticateAccount("login", { quiet: true });
     if (loggedIn) return true;
   }
-  joinError.textContent = "请先登录或注册账号";
-  accountStatus.textContent = "未登录";
-  return false;
+  accountStatus.textContent = "游客模式";
+  return true;
 }
 
 async function authenticateAccount(mode, options = {}) {
@@ -241,7 +253,12 @@ async function authenticateAccount(mode, options = {}) {
     playerToken = account.token;
     nameInput.value = account.name || username;
     localStorage.setItem("pokerAccountUsername", username);
-    localStorage.setItem("pokerAccountPassword", password);
+    localStorage.setItem("pokerRememberPassword", String(Boolean(rememberPasswordInput?.checked)));
+    if (rememberPasswordInput?.checked) {
+      localStorage.setItem("pokerAccountPassword", password);
+    } else {
+      localStorage.removeItem("pokerAccountPassword");
+    }
     localStorage.setItem("pokerName", nameInput.value);
     accountStatus.textContent = `已登录：${account.username}`;
     joinError.textContent = "";
@@ -426,6 +443,9 @@ function render() {
   buttons.allIn.disabled = !isMyTurn;
   buttons.ready.disabled = inHand || !me || me.chips <= 0;
   buttons.addBot.disabled = !inLobby || state.players.length >= 8;
+  if (botBuyInAmountInput && document.activeElement !== botBuyInAmountInput && state.botBuyIn) {
+    botBuyInAmountInput.value = state.botBuyIn;
+  }
   buttons.modeToggle.disabled = !inLobby;
   buttons.modeToggle.textContent = state.gameMode === "reward" ? "抢鱿鱼" : "常规";
   buttons.voiceToggle.disabled = !state?.code;
@@ -433,10 +453,10 @@ function render() {
   buttons.requestBuy.disabled = !me || me.inHand || !buyTargetSelect.value;
   buttons.ready.textContent = me?.ready ? "取消准备" : "准备";
   buttons.checkCall.textContent = state.toCall > 0 ? `跟注 ${state.toCall}` : "过牌";
-  raiseInput.min = 1;
+  raiseInput.min = 0;
   raiseInput.max = Math.max(1, me?.chips || 1);
   const currentRaise = Math.floor(Number(raiseInput.value) || 0);
-  if (currentRaise < 1) raiseInput.value = defaultRaiseAmount(state, me);
+  if (currentRaise < 0) raiseInput.value = defaultRaiseAmount(state, me);
   else if (me?.chips && currentRaise > me.chips) raiseInput.value = me.chips;
 }
 
@@ -459,9 +479,7 @@ function resetRaiseInputForState(nextState) {
 }
 
 function defaultRaiseAmount(nextState, me) {
-  const chips = Math.max(1, Number(me?.chips) || 1);
-  const bigBlind = Math.max(1, Number(nextState?.bigBlind) || 1);
-  return Math.min(chips, bigBlind);
+  return 0;
 }
 
 function renderCommunity() {

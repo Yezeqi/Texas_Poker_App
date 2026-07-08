@@ -3,6 +3,7 @@
   "appName": "HomeGame",
   "webDir": "public",
   "server": {
+    "url": "https://play.texashg.xyz",
     "cleartext": true,
     "allowNavigation": [
       "*"

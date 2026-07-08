@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 3000;
 const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
 const STARTING_CHIPS = 200;
 const BUY_IN_AMOUNT = 100;
-const BOT_BUY_IN = BUY_IN_AMOUNT;
+const DEFAULT_BOT_BUY_IN = STARTING_CHIPS;
 const RANK_VALUE = { 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, T: 10, J: 11, Q: 12, K: 13, A: 14 };
 const DATA_DIR = path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -155,6 +155,7 @@ function newRoom(code = roomCode()) {
     smallBlind: 1,
     bigBlind: 2,
     gameMode: "normal",
+    botBuyIn: DEFAULT_BOT_BUY_IN,
     rewardPool: 0,
     rewardAnte: 5,
     acted: new Set(),
@@ -232,6 +233,7 @@ function snapshot(room, viewerId) {
     smallBlind: room.smallBlind,
     bigBlind: room.bigBlind,
     gameMode: room.gameMode,
+    botBuyIn: room.botBuyIn,
     rewardPool: room.rewardPool,
     rewardAnte: room.rewardAnte,
     dealerSeat: room.dealerSeat,
@@ -306,7 +308,7 @@ function normalizeBuyAmount(amount) {
 function refillBustedBots(room) {
   room.players.forEach((player) => {
     if (!player.isBot || player.inHand || player.chips > 0) return;
-    player.chips += BOT_BUY_IN;
+    player.chips += room.botBuyIn || DEFAULT_BOT_BUY_IN;
     player.ready = true;
     player.allIn = false;
     player.folded = false;
@@ -877,9 +879,10 @@ io.on("connection", (socket) => {
     checkAutoStart(room);
   });
 
-  socket.on("addBot", ({ code }) => {
+  socket.on("addBot", ({ code, buyIn }) => {
     const room = rooms.get(String(code || "").toUpperCase());
     if (!room || seatedPlayers(room).length >= 8 || (room.phase !== "lobby" && room.phase !== "showdown")) return;
+    if (buyIn !== undefined) room.botBuyIn = normalizeBuyAmount(buyIn);
     addBot(room);
     room.message = "人机玩家已加入";
     checkAutoStart(room);
@@ -1099,7 +1102,7 @@ function addBot(room) {
     id: `bot-${room.code}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     name: botNames[Math.floor(Math.random() * botNames.length)],
     seat,
-    chips: STARTING_CHIPS,
+    chips: room.botBuyIn || DEFAULT_BOT_BUY_IN,
     hand: [],
     bet: 0,
     committed: 0,
