@@ -170,6 +170,7 @@ function newRoom(code = roomCode()) {
     revealedSeats: new Set(),
     runout: null,
     buyRequests: [],
+    lastAggressorSeat: null,
   };
   rooms.set(code, room);
   return room;
@@ -362,6 +363,7 @@ function startHand(room) {
   room.winners = [];
   room.revealedSeats = new Set();
   room.runout = null;
+  room.lastAggressorSeat = null;
   room.phase = "preflop";
 
   players.forEach((player) => {
@@ -372,6 +374,7 @@ function startHand(room) {
     player.allIn = false;
     player.inHand = true;
     player.ready = false;
+    startProfileHand(player);
   });
   room.players.filter((player) => !players.includes(player)).forEach((player) => {
     player.inHand = false;
@@ -693,12 +696,15 @@ function act(room, socket, type, amount = 0) {
   if (!player || player.seat !== room.turnSeat || room.phase === "lobby" || room.phase === "showdown") return;
 
   const toCall = Math.max(0, room.currentBet - player.bet);
+  const potBeforeAction = tablePot(room);
+  let paid = 0;
+  let raised = false;
   if (type === "fold") {
     player.folded = true;
     room.acted.add(player.seat);
     room.message = `${player.name} 弃牌`;
   } else if (type === "checkCall") {
-    const paid = Math.min(player.chips, toCall);
+    paid = Math.min(player.chips, toCall);
     player.chips -= paid;
     player.bet += paid;
     player.committed += paid;
@@ -706,7 +712,7 @@ function act(room, socket, type, amount = 0) {
     room.acted.add(player.seat);
     room.message = toCall > 0 ? `${player.name} 跟注` : `${player.name} 过牌`;
   } else if (type === "raise") {
-    const paid = Math.min(player.chips, Math.floor(Number(amount) || 0));
+    paid = Math.min(player.chips, Math.floor(Number(amount) || 0));
     if (paid <= 0) return;
     player.chips -= paid;
     player.bet += paid;
@@ -715,13 +721,15 @@ function act(room, socket, type, amount = 0) {
     if (player.bet > room.currentBet) {
       room.minRaise = 1;
       room.currentBet = player.bet;
+      room.lastAggressorSeat = player.seat;
+      raised = true;
       room.acted.clear();
     }
     room.acted.add(player.seat);
     room.message = `${player.name} 下注 ${paid}`;
   } else if (type === "allIn") {
     const previousBet = room.currentBet;
-    const paid = player.chips;
+    paid = player.chips;
     player.bet += paid;
     player.committed += paid;
     player.chips = 0;
@@ -729,12 +737,15 @@ function act(room, socket, type, amount = 0) {
     if (player.bet > room.currentBet) {
       room.currentBet = player.bet;
       room.minRaise = 1;
+      room.lastAggressorSeat = player.seat;
+      raised = true;
       room.acted.clear();
     }
     room.acted.add(player.seat);
     room.message = `${player.name} 全下`;
   }
 
+  recordPlayerTendency(room, player, type, { toCall, paid, raised, potBeforeAction });
   advanceGame(room);
 }
 
@@ -746,6 +757,112 @@ function scheduleBot(room) {
     const currentBot = room.players.find((player) => player.seat === room.turnSeat && player.isBot);
     if (currentBot) botAct(room, currentBot);
   }, 650);
+}
+
+function startProfileHand(player) {
+  if (player.isBot) return;
+  player.profile ??= newPlayerProfile();
+  player.profile.hands += 1;
+  player.handProfile = {
+    voluntarilyPutMoney: false,
+    raisedPreflop: false,
+  };
+}
+
+function newPlayerProfile() {
+  return {
+    hands: 0,
+    voluntaryHands: 0,
+    preflopRaises: 0,
+    calls: 0,
+    checks: 0,
+    raises: 0,
+    betsOrRaises: 0,
+    facedBets: 0,
+    foldsToBet: 0,
+    bigBets: 0,
+    postflopBets: 0,
+  };
+}
+
+function recordPlayerTendency(room, player, type, context) {
+  if (player.isBot) return;
+  player.profile ??= newPlayerProfile();
+  const profile = player.profile;
+  const facedBet = context.toCall > 0;
+  if (facedBet) profile.facedBets += 1;
+
+  if (type === "fold") {
+    if (facedBet) profile.foldsToBet += 1;
+    return;
+  }
+
+  if (type === "checkCall") {
+    if (facedBet) {
+      profile.calls += 1;
+      markVoluntaryMoney(player);
+    } else {
+      profile.checks += 1;
+    }
+    return;
+  }
+
+  if (type === "raise" || type === "allIn") {
+    profile.raises += 1;
+    profile.betsOrRaises += 1;
+    markVoluntaryMoney(player);
+    if (room.phase === "preflop" && !player.handProfile?.raisedPreflop) {
+      profile.preflopRaises += 1;
+      if (player.handProfile) player.handProfile.raisedPreflop = true;
+    }
+    if (room.phase !== "preflop") profile.postflopBets += 1;
+    if (context.paid >= Math.max(room.bigBlind * 4, context.potBeforeAction * 0.65)) profile.bigBets += 1;
+  }
+}
+
+function markVoluntaryMoney(player) {
+  if (!player.handProfile || player.handProfile.voluntarilyPutMoney) return;
+  player.handProfile.voluntarilyPutMoney = true;
+  player.profile.voluntaryHands += 1;
+}
+
+function playerStyle(player) {
+  const profile = player?.profile;
+  if (!profile || profile.hands < 4) return { label: "unknown", bluffCatch: 0, foldPressure: 0, bluffTarget: 0 };
+  const vpip = profile.voluntaryHands / Math.max(1, profile.hands);
+  const pfr = profile.preflopRaises / Math.max(1, profile.hands);
+  const aggression = profile.raises / Math.max(1, profile.calls + profile.raises);
+  const foldToBet = profile.foldsToBet / Math.max(1, profile.facedBets);
+  const bigBetRate = profile.bigBets / Math.max(1, profile.betsOrRaises);
+  const postflopBetRate = profile.postflopBets / Math.max(1, profile.hands);
+
+  if (vpip > 0.48 && (pfr > 0.22 || aggression > 0.48)) {
+    return { label: "looseAggressive", bluffCatch: 0.09 + bigBetRate * 0.05, foldPressure: -0.08, bluffTarget: -0.04 };
+  }
+  if (vpip < 0.28 && pfr < 0.12) {
+    return { label: "tightPassive", bluffCatch: -0.08, foldPressure: 0.08 + bigBetRate * 0.04, bluffTarget: foldToBet > 0.5 ? 0.05 : 0 };
+  }
+  if (foldToBet > 0.58 && profile.facedBets >= 5) {
+    return { label: "fitOrFold", bluffCatch: -0.03, foldPressure: 0.02, bluffTarget: 0.1 };
+  }
+  if (aggression < 0.18 && profile.calls >= 4) {
+    return { label: "callingStation", bluffCatch: 0.02, foldPressure: -0.04, bluffTarget: -0.12 };
+  }
+  if (postflopBetRate > 0.38 || bigBetRate > 0.38) {
+    return { label: "barrelHeavy", bluffCatch: 0.07, foldPressure: -0.05, bluffTarget: -0.02 };
+  }
+  return { label: "balanced", bluffCatch: 0, foldPressure: 0, bluffTarget: 0 };
+}
+
+function currentAggressor(room) {
+  return room.players.find((player) => player.seat === room.lastAggressorSeat) || null;
+}
+
+function tableTargetStyle(room, bot) {
+  const humans = activePlayers(room).filter((player) => !player.isBot && player.seat !== bot.seat);
+  if (humans.length === 0) return { label: "unknown", bluffCatch: 0, foldPressure: 0, bluffTarget: 0 };
+  const styles = humans.map(playerStyle);
+  return styles.reduce((best, style) => (style.bluffTarget > best.bluffTarget ? style : best), styles[0]);
 }
 
 function botAct(room, bot) {
@@ -760,26 +877,31 @@ function botAct(room, bot) {
   const stackPressure = toCall / Math.max(1, bot.chips + bot.bet);
   const spr = stackAfterCall / Math.max(1, pot + toCall);
   const canRaise = bot.chips > toCall + room.bigBlind;
+  const bettorStyle = toCall > 0 ? playerStyle(currentAggressor(room)) : tableTargetStyle(room, bot);
+  const readAdjustedEquity = clamp(equity + (toCall > 0 ? bettorStyle.bluffCatch : 0), 0.04, 0.99);
+  const adjustedBluff = clamp(profile.bluff + (toCall === 0 ? bettorStyle.bluffTarget : 0), 0.01, 0.38);
+  const adjustedFoldPressure = stackPressure + (toCall > 0 ? bettorStyle.foldPressure : 0);
   const raiseAmount = botRaiseAmount(room, bot, equity, profile, toCall);
   const roll = Math.random();
-  const valueRaise = canRaise && equity >= profile.raiseThreshold && roll < profile.aggression;
-  const semiBluff = canRaise && draw >= 0.08 && equity >= 0.38 && roll < profile.bluff + draw * 1.45;
-  const pureBluff = canRaise && toCall === 0 && equity < 0.48 && roll < profile.bluff * (room.community.length ? 0.65 : 0.38);
-  const lightThreeBet = canRaise && room.phase === "preflop" && toCall > 0 && equity > 0.5 && roll < profile.threeBet;
-  const shoveReady = canRaise && spr < 1.8 && (equity >= profile.allInThreshold || (semiBluff && roll < profile.bluff * 0.45));
+  const valueRaise = canRaise && readAdjustedEquity >= profile.raiseThreshold && roll < profile.aggression;
+  const semiBluff = canRaise && draw >= 0.08 && readAdjustedEquity >= 0.38 && roll < adjustedBluff + draw * 1.45;
+  const pureBluff = canRaise && toCall === 0 && readAdjustedEquity < 0.48 && roll < adjustedBluff * (room.community.length ? 0.65 : 0.38);
+  const bluffCatchRaise = canRaise && toCall > 0 && bettorStyle.bluffCatch > 0.06 && readAdjustedEquity > 0.48 && roll < profile.aggression * 0.22;
+  const lightThreeBet = canRaise && room.phase === "preflop" && toCall > 0 && readAdjustedEquity > 0.5 && roll < profile.threeBet + Math.max(0, bettorStyle.bluffCatch) * 0.7;
+  const shoveReady = canRaise && spr < 1.8 && (readAdjustedEquity >= profile.allInThreshold || (semiBluff && roll < adjustedBluff * 0.45));
   const callFloor = potOdds + 0.05 - profile.call * 0.08 - draw * 0.65;
 
   if (toCall >= bot.chips) {
-    actBot(room, bot, equity >= Math.max(0.42, potOdds + 0.1) || (draw >= 0.12 && roll < profile.call) ? "allIn" : "fold");
+    actBot(room, bot, readAdjustedEquity >= Math.max(0.42, potOdds + 0.1) || (draw >= 0.12 && roll < profile.call) ? "allIn" : "fold");
   } else if (shoveReady) {
     actBot(room, bot, "allIn");
   } else if (toCall === 0) {
-    actBot(room, bot, (valueRaise || semiBluff || pureBluff || (canRaise && equity > 0.54 && roll < profile.aggression * 0.32)) ? "raise" : "checkCall", raiseAmount);
-  } else if (valueRaise || semiBluff || lightThreeBet) {
+    actBot(room, bot, (valueRaise || semiBluff || pureBluff || (canRaise && readAdjustedEquity > 0.54 && roll < profile.aggression * 0.32)) ? "raise" : "checkCall", raiseAmount);
+  } else if (valueRaise || semiBluff || lightThreeBet || bluffCatchRaise) {
     actBot(room, bot, "raise", raiseAmount);
-  } else if (equity < callFloor && stackPressure > 0.08 && roll > profile.bluff) {
+  } else if (readAdjustedEquity < callFloor && adjustedFoldPressure > 0.08 && roll > adjustedBluff) {
     actBot(room, bot, "fold");
-  } else if (equity < 0.36 && stackPressure > 0.28 && roll > profile.call + draw) {
+  } else if (readAdjustedEquity < 0.36 && adjustedFoldPressure > 0.28 && roll > profile.call + draw) {
     actBot(room, bot, "fold");
   } else {
     actBot(room, bot, "checkCall");
