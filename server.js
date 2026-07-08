@@ -23,10 +23,10 @@ const STARTING_CHIPS = 200;
 const BUY_IN_AMOUNT = 100;
 const DEFAULT_BOT_BUY_IN = STARTING_CHIPS;
 const BOT_PROFILES = [
-  { key: "looseAggressive", aggression: 0.82, looseness: 0.78, bluff: 0.22, call: 0.62, raiseThreshold: 0.58, allInThreshold: 0.9 },
-  { key: "tightPassive", aggression: 0.28, looseness: 0.28, bluff: 0.04, call: 0.38, raiseThreshold: 0.78, allInThreshold: 0.96 },
-  { key: "balanced", aggression: 0.55, looseness: 0.5, bluff: 0.11, call: 0.5, raiseThreshold: 0.68, allInThreshold: 0.93 },
-  { key: "tricky", aggression: 0.68, looseness: 0.62, bluff: 0.27, call: 0.48, raiseThreshold: 0.64, allInThreshold: 0.92 },
+  { key: "looseAggressive", aggression: 0.86, looseness: 0.78, bluff: 0.24, call: 0.6, raiseThreshold: 0.58, allInThreshold: 0.9, threeBet: 0.24 },
+  { key: "tightPassive", aggression: 0.28, looseness: 0.28, bluff: 0.04, call: 0.36, raiseThreshold: 0.78, allInThreshold: 0.96, threeBet: 0.06 },
+  { key: "balanced", aggression: 0.56, looseness: 0.5, bluff: 0.12, call: 0.5, raiseThreshold: 0.68, allInThreshold: 0.93, threeBet: 0.14 },
+  { key: "tricky", aggression: 0.7, looseness: 0.62, bluff: 0.3, call: 0.46, raiseThreshold: 0.64, allInThreshold: 0.92, threeBet: 0.18 },
 ];
 const RANK_VALUE = { 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, T: 10, J: 11, Q: 12, K: 13, A: 14 };
 const DATA_DIR = path.join(__dirname, "data");
@@ -752,30 +752,35 @@ function botAct(room, bot) {
   if (!bot.inHand || bot.folded || bot.allIn || room.phase === "lobby" || room.phase === "showdown") return;
   const toCall = Math.max(0, room.currentBet - bot.bet);
   const profile = bot.aiProfile || BOT_PROFILES[2];
-  const strength = botStrength(room, bot);
-  const draw = room.community.length >= 3 ? drawBonus([...bot.hand, ...room.community]) : 0;
-  const pressure = toCall / Math.max(1, bot.chips + bot.bet);
-  const adjustedStrength = clamp(strength + (profile.looseness - 0.5) * 0.1, 0.08, 0.99);
-  const raiseAmount = botRaiseAmount(room, bot, adjustedStrength, profile);
-  const canRaise = bot.chips > toCall + room.bigBlind && bot.bet + raiseAmount > room.currentBet;
+  const equity = botEquity(room, bot, profile);
+  const draw = botDrawPressure(room, bot);
+  const pot = Math.max(room.bigBlind * 2, tablePot(room));
+  const potOdds = toCall > 0 ? toCall / Math.max(1, pot + toCall) : 0;
+  const stackAfterCall = bot.chips - Math.min(bot.chips, toCall);
+  const stackPressure = toCall / Math.max(1, bot.chips + bot.bet);
+  const spr = stackAfterCall / Math.max(1, pot + toCall);
+  const canRaise = bot.chips > toCall + room.bigBlind;
+  const raiseAmount = botRaiseAmount(room, bot, equity, profile, toCall);
   const roll = Math.random();
-  const bluffChance = Math.max(0, profile.bluff + draw * 0.55 - pressure * 0.22);
-  const semiBluff = canRaise && roll < bluffChance && pressure < 0.42;
-  const valueRaise = canRaise && adjustedStrength >= profile.raiseThreshold && roll < profile.aggression;
-  const shovePressure = bot.chips <= Math.max(room.bigBlind * 8, tablePot(room) * (0.75 + profile.aggression * 0.35));
+  const valueRaise = canRaise && equity >= profile.raiseThreshold && roll < profile.aggression;
+  const semiBluff = canRaise && draw >= 0.08 && equity >= 0.38 && roll < profile.bluff + draw * 1.45;
+  const pureBluff = canRaise && toCall === 0 && equity < 0.48 && roll < profile.bluff * (room.community.length ? 0.65 : 0.38);
+  const lightThreeBet = canRaise && room.phase === "preflop" && toCall > 0 && equity > 0.5 && roll < profile.threeBet;
+  const shoveReady = canRaise && spr < 1.8 && (equity >= profile.allInThreshold || (semiBluff && roll < profile.bluff * 0.45));
+  const callFloor = potOdds + 0.05 - profile.call * 0.08 - draw * 0.65;
 
   if (toCall >= bot.chips) {
-    actBot(room, bot, adjustedStrength > 0.64 || (adjustedStrength > 0.48 && roll < profile.call) ? "allIn" : "fold");
-  } else if (canRaise && shovePressure && (adjustedStrength >= profile.allInThreshold || (semiBluff && roll < profile.bluff * 0.45))) {
+    actBot(room, bot, equity >= Math.max(0.42, potOdds + 0.1) || (draw >= 0.12 && roll < profile.call) ? "allIn" : "fold");
+  } else if (shoveReady) {
     actBot(room, bot, "allIn");
   } else if (toCall === 0) {
-    actBot(room, bot, (valueRaise || semiBluff || (canRaise && adjustedStrength > 0.52 && roll < profile.aggression * 0.28)) ? "raise" : "checkCall", raiseAmount);
-  } else if (adjustedStrength < 0.28 + profile.looseness * 0.12 && pressure > 0.16 + profile.call * 0.12 && roll > profile.bluff) {
-    actBot(room, bot, "fold");
-  } else if (adjustedStrength < 0.46 && pressure > 0.36 && roll > profile.call) {
-    actBot(room, bot, "fold");
-  } else if (valueRaise || semiBluff) {
+    actBot(room, bot, (valueRaise || semiBluff || pureBluff || (canRaise && equity > 0.54 && roll < profile.aggression * 0.32)) ? "raise" : "checkCall", raiseAmount);
+  } else if (valueRaise || semiBluff || lightThreeBet) {
     actBot(room, bot, "raise", raiseAmount);
+  } else if (equity < callFloor && stackPressure > 0.08 && roll > profile.bluff) {
+    actBot(room, bot, "fold");
+  } else if (equity < 0.36 && stackPressure > 0.28 && roll > profile.call + draw) {
+    actBot(room, bot, "fold");
   } else {
     actBot(room, bot, "checkCall");
   }
@@ -786,17 +791,20 @@ function actBot(room, bot, type, amount = 0) {
   act(room, fakeSocket, type, amount);
 }
 
-function botRaiseAmount(room, bot, strength, profile = BOT_PROFILES[2]) {
+function botRaiseAmount(room, bot, equity, profile = BOT_PROFILES[2], toCall = Math.max(0, room.currentBet - bot.bet)) {
   const pot = Math.max(room.bigBlind * 2, tablePot(room));
-  const toCall = Math.max(0, room.currentBet - bot.bet);
-  const potFraction = 0.38 + profile.aggression * 0.28 + Math.max(0, strength - 0.55) * 0.55;
-  const pressure = strength > 0.82 ? 4.5 : strength > 0.66 ? 3.2 : 2.2;
-  const targetBet = Math.max(
-    room.currentBet + room.minRaise,
-    bot.bet + toCall + room.bigBlind,
-    bot.bet + Math.ceil(pot * potFraction),
-    room.bigBlind * pressure,
-  );
+  const street = room.community.length;
+  const preflop = street === 0;
+  const valueBias = clamp((equity - 0.52) * 1.8, 0, 0.55);
+  const randomMix = Math.random() * 0.08;
+  const potFraction = preflop
+    ? 0
+    : clamp(0.33 + profile.aggression * 0.18 + valueBias + randomMix, 0.33, equity > 0.82 ? 1.05 : 0.78);
+  const openSize = Math.ceil(room.bigBlind * (2.4 + profile.aggression * 1.1 + Math.random() * 0.35));
+  const threeBetSize = Math.ceil((room.currentBet || room.bigBlind) * (2.45 + profile.aggression * 1.15 + Math.random() * 0.35));
+  const targetBet = preflop
+    ? Math.max(room.currentBet + room.minRaise, toCall > 0 ? threeBetSize : openSize)
+    : Math.max(room.currentBet + room.minRaise, bot.bet + toCall + Math.ceil(pot * potFraction));
   const amountToPay = targetBet - bot.bet;
   return Math.min(bot.chips, Math.max(1, amountToPay));
 }
@@ -809,6 +817,18 @@ function botStrength(room, bot) {
   return room.community.length >= 3 ? postflopStrength(room, bot) : preflopStrength(bot.hand);
 }
 
+function botEquity(room, bot, profile = BOT_PROFILES[2]) {
+  const base = botStrength(room, bot);
+  const looseBonus = (profile.looseness - 0.5) * 0.12;
+  const aggressionBonus = (profile.aggression - 0.5) * 0.04;
+  return clamp(base + looseBonus + aggressionBonus, 0.05, 0.98);
+}
+
+function botDrawPressure(room, bot) {
+  if (room.community.length < 3) return 0;
+  return drawBonus([...bot.hand, ...room.community]);
+}
+
 function preflopStrength(hand) {
   if (hand.length < 2) return 0.35;
   const [a, b] = hand;
@@ -816,14 +836,17 @@ function preflopStrength(hand) {
   const low = Math.min(cardRank(a), cardRank(b));
   const suited = a[1] === b[1];
   const gap = high - low;
-  let score = 0.18 + high / 28 + low / 42;
-  if (high === low) score = 0.48 + high / 28;
-  if (suited) score += 0.08;
-  if (gap === 1) score += 0.07;
-  else if (gap === 2) score += 0.04;
-  else if (gap >= 5) score -= 0.08;
-  if (high >= 13 && low >= 10) score += 0.08;
-  return clamp(score, 0.2, 0.95);
+  let score = 0.16 + high / 30 + low / 48;
+  if (high === low) score = 0.48 + high / 25;
+  if (suited) score += 0.07;
+  if (gap === 1) score += 0.075;
+  else if (gap === 2) score += 0.045;
+  else if (gap === 3) score += 0.02;
+  else if (gap >= 5) score -= 0.09;
+  if (high >= 14 && low >= 10) score += 0.08;
+  if (high >= 13 && low >= 11) score += 0.045;
+  if (high <= 9 && low <= 6 && !suited && gap >= 3) score -= 0.08;
+  return clamp(score, 0.16, 0.96);
 }
 
 function postflopStrength(room, bot) {
@@ -842,14 +865,15 @@ function drawBonus(cards) {
     ranks.add(cardRank(card));
     if (cardRank(card) === 14) ranks.add(1);
   });
-  const flushDraw = [...suits.values()].some((count) => count >= 4) ? 0.09 : 0;
+  const flushDraw = [...suits.values()].some((count) => count >= 4) ? 0.12 : 0;
   let straightDraw = 0;
   for (let start = 1; start <= 10; start += 1) {
     let hits = 0;
     for (let rank = start; rank < start + 5; rank += 1) {
       if (ranks.has(rank)) hits += 1;
     }
-    if (hits >= 4) straightDraw = 0.08;
+    if (hits >= 4) straightDraw = 0.11;
+    else if (hits >= 3) straightDraw = Math.max(straightDraw, 0.035);
   }
   return flushDraw + straightDraw;
 }
@@ -1209,7 +1233,19 @@ function addBot(room, buyIn = room.botBuyIn || DEFAULT_BOT_BUY_IN) {
 
 function randomBotProfile() {
   const index = randomInt(0, BOT_PROFILES.length);
-  return { ...BOT_PROFILES[index] };
+  const profile = { ...BOT_PROFILES[index] };
+  profile.aggression = clamp(profile.aggression + randomOffset(0.09), 0.12, 0.94);
+  profile.looseness = clamp(profile.looseness + randomOffset(0.09), 0.16, 0.88);
+  profile.bluff = clamp(profile.bluff + randomOffset(0.055), 0.01, 0.34);
+  profile.call = clamp(profile.call + randomOffset(0.08), 0.2, 0.72);
+  profile.raiseThreshold = clamp(profile.raiseThreshold + randomOffset(0.045), 0.52, 0.84);
+  profile.allInThreshold = clamp(profile.allInThreshold + randomOffset(0.025), 0.86, 0.98);
+  profile.threeBet = clamp(profile.threeBet + randomOffset(0.055), 0.02, 0.32);
+  return profile;
+}
+
+function randomOffset(range) {
+  return (Math.random() * 2 - 1) * range;
 }
 
 server.listen(PORT, "0.0.0.0", () => {
